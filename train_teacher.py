@@ -10,6 +10,10 @@ import torch.multiprocessing as mp
 import torch.distributed as dist
 import torch.nn as nn
 import torch.backends.cudnn as cudnn
+from apex import amp
+from apex.parallel import convert_syncbn_model
+from apex.parallel import DistributedDataParallel
+
 import tensorboard_logger as tb_logger
 
 # import apex
@@ -46,7 +50,7 @@ def parse_option():
                         choices=['resnet8', 'resnet14', 'resnet20', 'resnet32', 'resnet44', 'resnet56', 'resnet110', 'ResNet18', 'ResNet34', 
                                  'resnet8x4', 'resnet32x4', 'wrn_16_1', 'wrn_16_2', 'wrn_40_1', 'wrn_40_2',
                                  'vgg8', 'vgg11', 'vgg13', 'vgg16', 'vgg19',
-                                 'MobileNetV2', 'ShuffleV1', 'ShuffleV2','ResNet50' ])
+                                 'MobileNetV2', 'ShuffleV1', 'ShuffleV2','ResNet50','ResNet18'  ])
     parser.add_argument('--dataset', type=str, default='cifar100', choices=['cifar100', 'imagenet', 'imagenette'], help='dataset')
 
     parser.add_argument('-t', '--trial', type=str, default='0', help='the experiment id')
@@ -71,8 +75,12 @@ def parse_option():
         opt.learning_rate = 0.01
 
     # set the path of model and tensorboard 
-    opt.model_path = './save/models'
-    opt.tb_path = './save/tensorboard'
+    # opt.model_path = './save/models'
+    # opt.tb_path = './save/tensorboard'
+
+    # set the path of model and tensorboard 
+    opt.model_path = '/home/zhl/workspace/save/models'
+    opt.tb_path = '/home/zhl/workspace/save/tensorboard'
 
     iterations = opt.lr_decay_epochs.split(',')
     opt.lr_decay_epochs = list([])
@@ -140,6 +148,9 @@ def main_worker(gpu, ngpus_per_node, opt):
     
     model = model_dict[opt.model](num_classes=n_cls)
 
+    # syncbn
+    model = convert_syncbn_model(model)
+
     # optimizer
     optimizer = optim.SGD(model.parameters(),
                           lr=opt.learning_rate,
@@ -148,14 +159,19 @@ def main_worker(gpu, ngpus_per_node, opt):
 
     criterion = nn.CrossEntropyLoss()
 
+    torch.cuda.set_device(opt.gpu)  
+    model = model.cuda(opt.gpu)
+    model, optimizer = amp.initialize(model, optimizer, opt_level='O1')
+
+
     if torch.cuda.is_available():
         # For multiprocessing distributed, DistributedDataParallel constructor
         # should always set the single device scope, otherwise,
         # DistributedDataParallel will use all available devices.
         if opt.multiprocessing_distributed:
             if opt.gpu is not None:
-                torch.cuda.set_device(opt.gpu)
-                model.cuda(opt.gpu)
+                ## torch.cuda.set_device(opt.gpu)
+                ## model.cuda(opt.gpu)
                 # When using a single GPU per process and per
                 # DistributedDataParallel, we need to divide the batch size
                 # ourselves based on the total number of GPUs we have
@@ -163,8 +179,10 @@ def main_worker(gpu, ngpus_per_node, opt):
                 opt.num_workers = int((opt.num_workers + ngpus_per_node - 1) / ngpus_per_node)
                 # DDP = torch.nn.parallel.DistributedDataParallel if opt.dali is None else apex.parallel.DistributedDataParallel
                 # model = DDP(model, delay_allreduce=True)
-                DDP = torch.nn.parallel.DistributedDataParallel
-                model = DDP(model, device_ids=[opt.gpu])
+                ## DDP = torch.nn.parallel.DistributedDataParallel
+                ## model = DDP(model, device_ids=[opt.gpu])
+                model = DistributedDataParallel(model, delay_allreduce=True)
+
             else:
                 print('multiprocessing_distributed must be with a specifiec gpu id')
         else:
@@ -174,6 +192,7 @@ def main_worker(gpu, ngpus_per_node, opt):
                 model = nn.DataParallel(model).cuda()
             else:
                 model = model.cuda()
+
 
     cudnn.benchmark = True
 

@@ -4,6 +4,8 @@ import sys
 import time
 import torch
 
+from apex import amp
+
 from .util import AverageMeter, accuracy, reduce_tensor
 
 def train_vanilla(epoch, train_loader, model, criterion, optimizer, opt):
@@ -47,7 +49,10 @@ def train_vanilla(epoch, train_loader, model, criterion, optimizer, opt):
 
         # ===================backward=====================
         optimizer.zero_grad()
-        loss.backward()
+        with amp.scale_loss(loss, optimizer) as scaled_loss:
+            scaled_loss.backward()
+
+        #loss.backward()
         optimizer.step()
 
         # print info
