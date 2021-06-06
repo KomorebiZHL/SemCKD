@@ -10,11 +10,6 @@ from torch.utils.data.distributed import DistributedSampler
 from torchvision import datasets
 from torchvision import transforms
 
-from dataset.folder2lmdb import ImageFolderLMDB
-
-imagenet_list = ['imagenet', 'imagenette']
-
-
 def get_data_folder(dataset='imagenet'):
     """
     return the path to store the data
@@ -110,7 +105,7 @@ class ImageFolderSample(datasets.ImageFolder):
 def get_test_loader(dataset='imagenet', batch_size=128, num_workers=8):
     """get the test data loader"""
 
-    if dataset in imagenet_list:
+    if dataset == 'imagenet':
         data_folder = get_data_folder(dataset)
     else:
         raise NotImplementedError('dataset not supported: {}'.format(dataset))
@@ -138,7 +133,7 @@ def get_test_loader(dataset='imagenet', batch_size=128, num_workers=8):
 def get_dataloader_sample(dataset='imagenet', batch_size=128, num_workers=8, is_sample=False, k=4096):
     """Data Loader for ImageNet"""
 
-    if dataset in imagenet_list:
+    if dataset == 'imagenet':
         data_folder = get_data_folder(dataset)
     else:
         raise NotImplementedError('dataset not supported: {}'.format(dataset))
@@ -186,7 +181,7 @@ def get_imagenet_dataloader(dataset='imagenet', batch_size=128, num_workers=16, 
     """
     Data Loader for imagenet
     """
-    if dataset in imagenet_list:
+    if dataset == 'imagenet':
         data_folder = get_data_folder(dataset)
     else:
         raise NotImplementedError('dataset not supported: {}'.format(dataset))
@@ -208,19 +203,9 @@ def get_imagenet_dataloader(dataset='imagenet', batch_size=128, num_workers=16, 
 
     train_folder = os.path.join(data_folder, 'train')
     test_folder = os.path.join(data_folder, 'val')
-    if use_lmdb:
-        train_lmdb_path = os.path.join(data_folder, 'train.lmdb')
-        test_lmdb_path = os.path.join(data_folder, 'val.lmdb')
 
-    if use_lmdb:
-        train_set = ImageFolderLMDB(train_lmdb_path, transform=train_transform)
-    else:
-        train_set = datasets.ImageFolder(train_folder, transform=train_transform)
-
-    if use_lmdb:
-        test_set = ImageFolderLMDB(test_lmdb_path, transform=test_transform)
-    else:
-        test_set = datasets.ImageFolder(test_folder, transform=test_transform)
+    train_set = datasets.ImageFolder(train_folder, transform=train_transform)
+    test_set = datasets.ImageFolder(test_folder, transform=test_transform)
 
     if multiprocessing_distributed:
         train_sampler = DistributedSampler(train_set)

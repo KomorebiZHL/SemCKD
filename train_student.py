@@ -24,7 +24,7 @@ from models import model_dict
 from models.util import Embed, ConvReg, LinearEmbed, SelfA
 
 from dataset.cifar100 import get_cifar100_dataloaders, get_cifar100_dataloaders_sample
-from dataset.imagenet import get_imagenet_dataloader, imagenet_list
+from dataset.imagenet import get_imagenet_dataloader
 from dataset.imagenet_dali import get_dali_data_loader
 
 from helper.util import adjust_learning_rate, save_dict_to_json, reduce_tensor
@@ -98,11 +98,10 @@ def parse_option():
 
     # switch for edge transformation
     parser.add_argument('--no_edge_transform', action='store_true') # default=false
-    
-    parser.add_argument('--use-lmdb', action='store_true') # default=false
-
     parser.add_argument('--dali', type=str, choices=['cpu', 'gpu'], default=None)
-
+    parser.add_argument('--apex', action='store_true')
+    parser.add_argument('--syncbn', action='store_true', help='enabling apex sync BN.')
+    parser.add_argument('--opt_level', type=str, default='O1')
     parser.add_argument('--multiprocessing-distributed', action='store_true',
                     help='Use multi-processing distributed training to launch '
                          'N processes per node, which has N GPUs. This is the '
@@ -110,11 +109,8 @@ def parse_option():
                          'multi node data parallel training')
     parser.add_argument('--dist-url', default='tcp://127.0.0.1:23451', type=str,
                     help='url used to set up distributed training')
-    
     parser.add_argument('--deterministic', action='store_true', help='Make results reproducible')
-
     parser.add_argument('--skip-validation', action='store_true', help='Skip validation of teacher')
-
     parser.add_argument('--hkd_initial_weight', default=100, type=float, help='Initial layer weight for HKD method')
     parser.add_argument('--hkd_decay', default=0.7, type=float, help='Layer weight decay for HKD method')
 
@@ -139,6 +135,10 @@ def parse_option():
     opt.model_name = model_name_template.format(opt.model_s, opt.model_t, opt.dataset, opt.distill,
                                                 opt.gamma, opt.alpha, opt.beta, opt.trial)
 
+    if opt.dali is not None:
+        opt.model_name += '_dali:' + opt.dali
+    if opt.syncbn:
+            opt.model_name += '_syncbn'
     if opt.dali is not None:
         opt.model_name += '_dali:' + opt.dali
 
@@ -207,6 +207,16 @@ def main_worker(gpu, ngpus_per_node, opt):
     opt.gpu = int(gpu)
     opt.gpu_id = int(gpu)
 
+    # make apex optional
+    if opt.apex or opt.syncbn:
+        try:
+            global DDP, amp, optimizers, parallel
+            from apex import amp
+            from apex.parallel import DistributedDataParallel as DDP
+            from apex import amp, optimizers, parallel
+        except ImportError:
+            raise ImportError("Please install apex from https://www.github.com/nvidia/apex to run this example.")
+
     if opt.gpu is not None:
         print("Use GPU: {} for training".format(opt.gpu))
 
@@ -216,8 +226,6 @@ def main_worker(gpu, ngpus_per_node, opt):
         dist_backend = 'nccl'
         dist.init_process_group(backend=dist_backend, init_method=opt.dist_url,
                                 world_size=opt.world_size, rank=opt.rank)
-        opt.batch_size = int(opt.batch_size / ngpus_per_node)
-        opt.num_workers = int((opt.num_workers + ngpus_per_node - 1) / ngpus_per_node)
 
     if opt.deterministic:
         torch.manual_seed(12345)
@@ -228,7 +236,6 @@ def main_worker(gpu, ngpus_per_node, opt):
     class_num_map = {
         'cifar100': 100,
         'imagenet': 1000,
-        'imagenette': 10,
     }
     if opt.dataset not in class_num_map:
         raise NotImplementedError(opt.dataset)
@@ -318,6 +325,11 @@ def main_worker(gpu, ngpus_per_node, opt):
 
     module_list.append(model_t)
     
+    optimizer = optim.SGD(trainable_list.parameters(),
+                          lr=opt.learning_rate,
+                          momentum=opt.momentum,
+                          weight_decay=opt.weight_decay)
+
     if torch.cuda.is_available():
         # For multiprocessing distributed, DistributedDataParallel constructor
         # should always set the single device scope, otherwise,
@@ -326,11 +338,14 @@ def main_worker(gpu, ngpus_per_node, opt):
             if opt.gpu is not None:
                 torch.cuda.set_device(opt.gpu)
                 module_list.cuda(opt.gpu)
-                distributed_modules = []
+                opt.batch_size = int(opt.batch_size / ngpus_per_node)
+                opt.num_workers = int((opt.num_workers + ngpus_per_node - 1) / ngpus_per_node)
                 for module in module_list:
-                    DDP = torch.nn.parallel.DistributedDataParallel
-                    distributed_modules.append(DDP(module, device_ids=[opt.gpu]))
-                module_list = distributed_modules
+                    if opt.apex or opt.syncbn:
+                        module, optimizer = amp.initialize(module, optimizer, opt_level=opt.opt_level)
+                        module = DDP(module, delay_allreduce=True)
+                    else:
+                        module = torch.nn.parallel.DistributedDataParallel(module, device_ids=[opt.gpu])
                 criterion_list.cuda(opt.gpu)
             else:
                 print('multiprocessing_distributed must be with a specifiec gpu id')
@@ -339,11 +354,6 @@ def main_worker(gpu, ngpus_per_node, opt):
             module_list.cuda()
         if not opt.deterministic:
             cudnn.benchmark = True
-
-    optimizer = optim.SGD(trainable_list.parameters(),
-                          lr=opt.learning_rate,
-                          momentum=opt.momentum,
-                          weight_decay=opt.weight_decay)
 
     # dataloader
     if opt.dataset == 'cifar100':
@@ -355,7 +365,7 @@ def main_worker(gpu, ngpus_per_node, opt):
         else:
             train_loader, val_loader = get_cifar100_dataloaders(batch_size=opt.batch_size,
                                                                         num_workers=opt.num_workers)
-    elif opt.dataset in imagenet_list:
+    elif opt.dataset == 'imagenet':
         if opt.dali is None:
             train_loader, val_loader, train_sampler = get_imagenet_dataloader(dataset=opt.dataset, batch_size=opt.batch_size,
                                                                         num_workers=opt.num_workers,

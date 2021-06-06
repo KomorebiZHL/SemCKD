@@ -49,10 +49,11 @@ def train_vanilla(epoch, train_loader, model, criterion, optimizer, opt):
 
         # ===================backward=====================
         optimizer.zero_grad()
-        with amp.scale_loss(loss, optimizer) as scaled_loss:
-            scaled_loss.backward()
-
-        #loss.backward()
+        if opt.apex or opt.syncbn:
+            with amp.scale_loss(loss, optimizer) as scaled_loss:
+                scaled_loss.backward()
+        else:
+            loss.backward()
         optimizer.step()
 
         # print info
@@ -195,7 +196,11 @@ def train_distill(epoch, train_loader, module_list, criterion_list, optimizer, o
 
         # ===================backward=====================
         optimizer.zero_grad()
-        loss.backward()
+        if opt.apex or opt.syncbn:
+            with amp.scale_loss(loss, optimizer) as scaled_loss:
+                scaled_loss.backward()
+        else:
+            loss.backward()
         optimizer.step()        
 
         # print info
